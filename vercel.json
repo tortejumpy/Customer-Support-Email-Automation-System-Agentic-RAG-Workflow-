@@ -1,0 +1,28 @@
+{
+    "version": 2,
+    "name": "email-automation-dashboard",
+    "builds": [
+        {
+            "src": "api/server.py",
+            "use": "@vercel/python"
+        }
+    ],
+    "routes": [
+        {
+            "src": "/static/(.*)",
+            "dest": "/api/server.py"
+        },
+        {
+            "src": "/run",
+            "dest": "/api/server.py"
+        },
+        {
+            "src": "/health",
+            "dest": "/api/server.py"
+        },
+        {
+            "src": "/(.*)",
+            "dest": "/api/server.py"
+        }
+    ]
+}
