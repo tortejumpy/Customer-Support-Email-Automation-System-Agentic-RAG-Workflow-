@@ -57,7 +57,7 @@ class Workflow():
             {
                 "send": "send_email",
                 "rewrite": "email_writer",
-                "stop": "categorize_email"
+                "stop": "send_email"  # Save best-effort draft rather than discarding
             }
         )
 

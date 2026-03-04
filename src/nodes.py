@@ -135,8 +135,8 @@ class Nodes:
             state["writer_messages"] = []
             return "send"
         elif state["trials"] >= 3:
-            print(Fore.RED + "Email is not good, we reached max trials must stop!!!" + Style.RESET_ALL)
-            state["emails"].pop()
+            print(Fore.RED + "Max trials reached — saving best-effort draft." + Style.RESET_ALL)
+            # Don't pop emails — send_email still needs current_email
             state["writer_messages"] = []
             return "stop"
         else:
@@ -147,6 +147,9 @@ class Nodes:
         """Creates a draft response in Gmail."""
         print(Fore.YELLOW + "Creating draft email...\n" + Style.RESET_ALL)
         self.gmail_tools.create_draft_reply(state["current_email"], state["generated_email"])
+        # Pop processed email so the loop moves to the next one
+        if state.get("emails"):
+            state["emails"].pop()
         return {"retrieved_documents": "", "trials": 0}
 
     def send_email_response(self, state: GraphState) -> GraphState:
