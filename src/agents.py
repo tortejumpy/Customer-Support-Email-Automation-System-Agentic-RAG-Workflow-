@@ -10,8 +10,22 @@ from .prompts import *
 
 class Agents():
     def __init__(self):
-        # Choose which LLMs to use for each agent (GPT-4o, Gemini, LLAMA3,...)
-        llama = ChatGroq(model_name="llama-3.3-70b-versatile", temperature=0.1)
+        # Primary: llama-3.3-70b-versatile (best structured output on free tier)
+        # Fallback: mixtral-8x7b-32768 (kicks in automatically on 503/429/capacity errors)
+        # max_tokens=600 keeps each response under the 12k TPM limit
+        _primary = ChatGroq(
+            model_name="llama-3.3-70b-versatile",
+            temperature=0.1,
+            max_tokens=600,
+            max_retries=5,
+        )
+        _fallback = ChatGroq(
+            model_name="mixtral-8x7b-32768",
+            temperature=0.1,
+            max_tokens=600,
+            max_retries=3,
+        )
+        llama = _primary.with_fallbacks([_fallback])
         gemini = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.1)
         
         # QA assistant chat
