@@ -1,7 +1,9 @@
 import os
 import re
+import json
 import uuid
 import base64
+import tempfile
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -155,19 +157,84 @@ class GmailToolsClass:
 
         
     def _get_gmail_service(self):
+        """
+        Build and return an authenticated Gmail service.
+
+        Priority order for credentials:
+          1. GOOGLE_TOKEN_JSON env var   (base64-encoded token.json content)
+          2. token.json file on disk     (local dev)
+          3. GOOGLE_CREDENTIALS_JSON env var (base64-encoded credentials.json)
+          4. credentials.json file on disk   (local dev)
+
+        On Railway/Render, set these env vars with the base64-encoded file contents:
+          GOOGLE_TOKEN_JSON       = $(base64 -w0 token.json)
+          GOOGLE_CREDENTIALS_JSON = $(base64 -w0 credentials.json)
+        """
         creds = None
-        if os.path.exists('token.json'):
-            creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
+
+        # ── 1. Try loading token from env var ─────────────────────────────
+        token_env = os.environ.get("GOOGLE_TOKEN_JSON")
+        if token_env:
+            try:
+                token_data = base64.b64decode(token_env).decode("utf-8")
+                creds = Credentials.from_authorized_user_info(
+                    json.loads(token_data), SCOPES
+                )
+            except Exception as e:
+                print(f"Warning: could not parse GOOGLE_TOKEN_JSON env var: {e}")
+
+        # ── 2. Fall back to token.json file ───────────────────────────────
+        if not creds and os.path.exists("token.json"):
+            creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+
+        # ── 3. Refresh expired token ──────────────────────────────────────
+        if creds and not creds.valid:
+            if creds.expired and creds.refresh_token:
                 creds.refresh(Request())
+                # Persist refreshed token back to file if possible
+                try:
+                    with open("token.json", "w") as f:
+                        f.write(creds.to_json())
+                except OSError:
+                    pass  # Read-only filesystem on Railway — that's OK
             else:
-                flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-                creds = flow.run_local_server(port=0)
-            with open('token.json', 'w') as token:
-                token.write(creds.to_json())
-        
-        return build('gmail', 'v1', credentials=creds)
+                creds = None  # Force re-auth below
+
+        # ── 4. OAuth flow using credentials.json or env var ───────────────
+        if not creds:
+            creds_env = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+            if creds_env:
+                # Write to a temp file because InstalledAppFlow needs a file path
+                try:
+                    creds_data = base64.b64decode(creds_env).decode("utf-8")
+                    tmp = tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".json", delete=False
+                    )
+                    tmp.write(creds_data)
+                    tmp.close()
+                    cred_file = tmp.name
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Failed to decode GOOGLE_CREDENTIALS_JSON: {e}"
+                    )
+            elif os.path.exists("credentials.json"):
+                cred_file = "credentials.json"
+            else:
+                raise FileNotFoundError(
+                    "Gmail credentials not found.\n"
+                    "Set GOOGLE_CREDENTIALS_JSON env var (base64-encoded credentials.json) "
+                    "and GOOGLE_TOKEN_JSON env var (base64-encoded token.json) on Railway."
+                )
+
+            flow = InstalledAppFlow.from_client_secrets_file(cred_file, SCOPES)
+            creds = flow.run_local_server(port=0)
+            try:
+                with open("token.json", "w") as f:
+                    f.write(creds.to_json())
+            except OSError:
+                pass
+
+        return build("gmail", "v1", credentials=creds)
     
     def _should_skip_email(self, email_info):
         return os.environ['MY_EMAIL'] in email_info['sender']
