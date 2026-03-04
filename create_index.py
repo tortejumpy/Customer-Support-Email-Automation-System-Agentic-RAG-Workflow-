@@ -30,7 +30,7 @@ doc_splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)
 doc_chunks = doc_splitter.split_documents(docs)
 
 print("Creating vector embeddings...")
-embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")
 
 vectorstore = Chroma.from_documents(doc_chunks, embeddings, persist_directory="db")
 

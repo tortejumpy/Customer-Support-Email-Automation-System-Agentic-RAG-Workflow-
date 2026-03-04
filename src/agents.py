@@ -15,7 +15,7 @@ class Agents():
         gemini = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.1)
         
         # QA assistant chat
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")
         vectorstore = Chroma(persist_directory="db", embedding_function=embeddings)
         retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
