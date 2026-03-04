@@ -3,6 +3,21 @@ from .agents import Agents
 from .tools.GmailTools import GmailToolsClass
 from .state import GraphState, Email
 
+# ── Token budget constants ──────────────────────────────────────────────────
+# Groq free tier: 12,000 TPM for llama-3.3-70b-versatile.
+# Each call budget (input): prompt ~1500 tok + email ~200 tok + RAG ~100 tok ≈ 1800 tok
+# Output capped at 600 tok in agents.py  → total well under 3000 tok per call.
+_MAX_EMAIL_CHARS    = 800   # ~200 tokens
+_MAX_RAG_CHARS      = 400   # ~100 tokens
+_MAX_HISTORY_MSGS   = 2     # keep only last N writer messages across retries
+_MAX_HIST_MSG_CHARS = 250   # truncate each history item
+
+def _trunc(text: str, max_chars: int) -> str:
+    """Truncate text to stay within LLM token limits."""
+    if not text or len(text) <= max_chars:
+        return text or ""
+    return text[:max_chars] + " [...truncated]"
+
 
 class Nodes:
     def __init__(self):
@@ -24,23 +39,19 @@ class Nodes:
         else:
             print(Fore.GREEN + "New emails to process" + Style.RESET_ALL)
             return "process"
-        
+
     def is_email_inbox_empty(self, state: GraphState) -> GraphState:
         return state
 
     def categorize_email(self, state: GraphState) -> GraphState:
         """Categorizes the current email using the categorize_email agent."""
         print(Fore.YELLOW + "Checking email category...\n" + Style.RESET_ALL)
-        
-        # Get the last email
         current_email = state["emails"][-1]
-        result = self.agents.categorize_email.invoke({"email": current_email.body})
+        result = self.agents.categorize_email.invoke(
+            {"email": _trunc(current_email.body, _MAX_EMAIL_CHARS)}
+        )
         print(Fore.MAGENTA + f"Email category: {result.category.value}" + Style.RESET_ALL)
-        
-        return {
-            "email_category": result.category.value,
-            "current_email": current_email
-        }
+        return {"email_category": result.category.value, "current_email": current_email}
 
     def route_email_based_on_category(self, state: GraphState) -> str:
         """Routes the email based on its category."""
@@ -56,9 +67,8 @@ class Nodes:
     def construct_rag_queries(self, state: GraphState) -> GraphState:
         """Constructs RAG queries based on the email content."""
         print(Fore.YELLOW + "Designing RAG query...\n" + Style.RESET_ALL)
-        email_content = state["current_email"].body
+        email_content = _trunc(state["current_email"].body, _MAX_EMAIL_CHARS)
         query_result = self.agents.design_rag_queries.invoke({"email": email_content})
-        
         return {"rag_queries": query_result.queries}
 
     def retrieve_from_rag(self, state: GraphState) -> GraphState:
@@ -67,56 +77,54 @@ class Nodes:
         final_answer = ""
         for query in state["rag_queries"]:
             rag_result = self.agents.generate_rag_answer.invoke(query)
-            final_answer += query + "\n" + rag_result + "\n\n"
-        
+            # Truncate each RAG answer to keep total context under budget
+            final_answer += query + "\n" + _trunc(rag_result, _MAX_RAG_CHARS) + "\n\n"
         return {"retrieved_documents": final_answer}
 
     def write_draft_email(self, state: GraphState) -> GraphState:
         """Writes a draft email based on the current email and retrieved information."""
         print(Fore.YELLOW + "Writing draft email...\n" + Style.RESET_ALL)
-        
-        # Format input to the writer agent
+
+        email_body = _trunc(state["current_email"].body, _MAX_EMAIL_CHARS)
+        rag_docs   = _trunc(state["retrieved_documents"], _MAX_RAG_CHARS)
+
         inputs = (
             f'# **EMAIL CATEGORY:** {state["email_category"]}\n\n'
-            f'# **EMAIL CONTENT:**\n{state["current_email"].body}\n\n'
-            f'# **INFORMATION:**\n{state["retrieved_documents"]}' # Empty for feedback or complaint
+            f'# **EMAIL CONTENT:**\n{email_body}\n\n'
+            f'# **INFORMATION:**\n{rag_docs}'
         )
-        
-        # Get messages history for current email
-        writer_messages = state.get('writer_messages', [])
-        
-        # Write email
+
+        # ── Cap history: keeps only last N messages, each truncated ──────────
+        raw_history = state.get('writer_messages', [])
+        capped_history = [
+            _trunc(str(m), _MAX_HIST_MSG_CHARS)
+            for m in raw_history[-_MAX_HISTORY_MSGS:]
+        ]
+
         draft_result = self.agents.email_writer.invoke({
             "email_information": inputs,
-            "history": writer_messages
+            "history": capped_history,
         })
-        email = draft_result.email
+        email  = draft_result.email
         trials = state.get('trials', 0) + 1
 
-        # Append writer's draft to the message list
-        writer_messages.append(f"**Draft {trials}:**\n{email}")
+        # Append truncated draft to history
+        raw_history.append(_trunc(f"**Draft {trials}:**\n{email}", _MAX_HIST_MSG_CHARS))
 
-        return {
-            "generated_email": email, 
-            "trials": trials,
-            "writer_messages": writer_messages
-        }
+        return {"generated_email": email, "trials": trials, "writer_messages": raw_history}
 
     def verify_generated_email(self, state: GraphState) -> GraphState:
         """Verifies the generated email using the proofreader agent."""
         print(Fore.YELLOW + "Verifying generated email...\n" + Style.RESET_ALL)
         review = self.agents.email_proofreader.invoke({
-            "initial_email": state["current_email"].body,
-            "generated_email": state["generated_email"],
+            "initial_email":    _trunc(state["current_email"].body, _MAX_EMAIL_CHARS),
+            "generated_email":  _trunc(state["generated_email"], 800),
         })
-
         writer_messages = state.get('writer_messages', [])
-        writer_messages.append(f"**Proofreader Feedback:**\n{review.feedback}")
-
-        return {
-            "sendable": review.send,
-            "writer_messages": writer_messages
-        }
+        writer_messages.append(
+            _trunc(f"**Proofreader Feedback:**\n{review.feedback}", _MAX_HIST_MSG_CHARS)
+        )
+        return {"sendable": review.send, "writer_messages": writer_messages}
 
     def must_rewrite(self, state: GraphState) -> str:
         """Determines if the email needs to be rewritten based on the review and trial count."""
@@ -139,16 +147,14 @@ class Nodes:
         """Creates a draft response in Gmail."""
         print(Fore.YELLOW + "Creating draft email...\n" + Style.RESET_ALL)
         self.gmail_tools.create_draft_reply(state["current_email"], state["generated_email"])
-        
         return {"retrieved_documents": "", "trials": 0}
 
     def send_email_response(self, state: GraphState) -> GraphState:
         """Sends the email response directly using Gmail."""
         print(Fore.YELLOW + "Sending email...\n" + Style.RESET_ALL)
         self.gmail_tools.send_reply(state["current_email"], state["generated_email"])
-        
         return {"retrieved_documents": "", "trials": 0}
-    
+
     def skip_unrelated_email(self, state):
         """Skip unrelated email and remove from emails list."""
         print("Skipping unrelated email...\n")
