@@ -10,22 +10,29 @@ from .prompts import *
 
 class Agents():
     def __init__(self):
-        # Primary: llama-3.3-70b-versatile (best structured output on free tier)
-        # Fallback: mixtral-8x7b-32768 (kicks in automatically on 503/429/capacity errors)
-        # max_tokens=600 keeps each response under the 12k TPM limit
-        _primary = ChatGroq(
+        # 3-tier fallback chain — each model has a separate quota:
+        # Tier 1: llama-3.3-70b-versatile  (Groq, 100k TPD — best structured output)
+        # Tier 2: llama-3.1-8b-instant      (Groq, separate quota — higher TPM limit)
+        # Tier 3: gemini-1.5-flash          (Google — completely separate provider/quota)
+        # Triggered automatically on 429, 503, or any API error.
+        _tier1 = ChatGroq(
             model_name="llama-3.3-70b-versatile",
             temperature=0.1,
             max_tokens=600,
-            max_retries=5,
+            max_retries=2,
         )
-        _fallback = ChatGroq(
-            model_name="mixtral-8x7b-32768",
+        _tier2 = ChatGroq(
+            model_name="llama-3.1-8b-instant",
             temperature=0.1,
             max_tokens=600,
-            max_retries=3,
+            max_retries=2,
         )
-        llama = _primary.with_fallbacks([_fallback])
+        _tier3 = ChatGoogleGenerativeAI(
+            model="gemini-1.5-flash",
+            temperature=0.1,
+            max_output_tokens=600,
+        )
+        llama = _tier1.with_fallbacks([_tier2, _tier3])
         gemini = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.1)
         
         # QA assistant chat
